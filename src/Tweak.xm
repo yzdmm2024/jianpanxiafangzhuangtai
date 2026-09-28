@@ -388,14 +388,25 @@ static void ksActDismiss(id s, SEL _c) {
 // 地球键：切换到下一个输入法（把 HideGlobe 藏掉的那个 globe 以按钮形式复活）
 // iOS 16 私有入口：UIKeyboardImpl -setInputModeToNextInPreferredListWithExecutionContext:
 //   （老的无参 setInputModeToNextInPreferredList 在 iOS 16 已被取代）
-// 取激活键盘实例优先用 +activeKeyboard；拿不到就走兜底，全程 @try 包住绝不崩。
+// 实例获取：iOS 16 上 +activeKeyboard 已不可靠（frida 实测非类方法），改由下方
+//   %hook UIKeyboardImpl -layoutSubviews 抓取当前实例存进 gKSKeyboardImpl（最稳）。
+static __weak id gKSKeyboardImpl = nil;
+%hook UIKeyboardImpl
+- (void)layoutSubviews {
+    gKSKeyboardImpl = self;   // 每次布局都刷新，确保拿到当前激活键盘实例
+    %orig;
+}
+%end
+
 static void ksActGlobe(id s, SEL _c) {
     @try {
-        Class impl = objc_getClass("UIKeyboardImpl");
-        if (!impl) return;
-        id kb = nil;
-        if ([impl respondsToSelector:@selector(activeKeyboard)])
-            kb = [impl performSelector:@selector(activeKeyboard)];
+        id kb = gKSKeyboardImpl;
+        // 兜底：万一 hook 还没抓到，再试一次 +activeKeyboard
+        if (!kb) {
+            Class impl = objc_getClass("UIKeyboardImpl");
+            if (impl && [impl respondsToSelector:@selector(activeKeyboard)])
+                kb = [impl performSelector:@selector(activeKeyboard)];
+        }
         if (kb && [kb respondsToSelector:@selector(setInputModeToNextInPreferredListWithExecutionContext:)]) {
             // 不传 execution context：系统内部会按需自建；包在 try 里，调用失败也只是不切换
             [kb performSelector:@selector(setInputModeToNextInPreferredListWithExecutionContext:) withObject:nil];
