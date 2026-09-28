@@ -432,15 +432,17 @@ static void ksActGlobe(id s, SEL _c) {
         id kb = ksGetKeyboardImpl();
         if (!kb) { ksToast(@"无法切换输入法"); return; }
         // 主路径：用 taskQueue 提供真实的 execution context 调用（官方内部姿势，绝不崩）
+        // 私有 API 全部用 performSelector 调用，避开“未声明方法”编译错误
         if ([kb respondsToSelector:@selector(taskQueue)] &&
             [kb respondsToSelector:@selector(setInputModeToNextInPreferredListWithExecutionContext:)]) {
             id queue = [kb performSelector:@selector(taskQueue)];
             if (queue) {
-                [queue addTask:^(id context, int arg2) {
+                void (^blk)(id, int) = ^(id context, int arg2) {
                     @try {
-                        [kb setInputModeToNextInPreferredListWithExecutionContext:context];
+                        [kb performSelector:@selector(setInputModeToNextInPreferredListWithExecutionContext:) withObject:context];
                     } @catch (NSException *e) {}
-                }];
+                };
+                [queue performSelector:@selector(addTask:) withObject:blk];
                 return;
             }
         }
