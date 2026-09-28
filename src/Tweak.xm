@@ -388,55 +388,64 @@ static void ksActDismiss(id s, SEL _c) {
 // 地球键：切换到下一个输入法（把 HideGlobe 藏掉的那个 globe 以按钮形式复活）
 // iOS 16 私有入口：UIKeyboardImpl -setInputModeToNextInPreferredListWithExecutionContext:
 //   （老的无参 setInputModeToNextInPreferredList 在 iOS 16 已被取代）
-// 实例获取：iOS 16 上 +activeKeyboard 已不可用（frida 实测非类方法，运行期也拿不到）。
-//   改为从 dock 视图向上 / 在键盘窗口里找到 UIKeyboard 私有视图，取其 delegate（即
-//   UIKeyboardImpl 实例）。多路兜底，全程 @try 包住，绝不崩。
+// 关键坑：该方法需要一个真实的 UIKeyboardTaskExecutionContext，传 nil 会在系统内部
+//   直接 EXC_BAD_ACCESS -> 闪退（@try 抓不住这种内存崩溃）。正确姿势是用 kb.taskQueue
+//   包一层：系统在自己的 task block 里会把合法的 context 传进来，正好喂给这个方法。
+// 实例获取：优先 +activeInstance，其次 +sharedInstance（iOS 2.0 起就有，最稳），
+//   不再依赖 +activeKeyboard（iOS16 上已非类方法）。仍拿不到才回退视图树找 delegate。
 
-// 在视图树里找 UIKeyboard 私有视图，返回它的 delegate（UIKeyboardImpl）
-static id ksFindKeyboardImpl(id fromView) {
-    Class kbCls = objc_getClass("UIKeyboard");
-    NSMutableArray *roots = [NSMutableArray array];
-    UIView *v = (UIView *)fromView;
-    while (v) { [roots addObject:v]; v = v.superview; }   // dock 向上：UIKeyboard 多半是祖先
-    @try {
-        for (UIWindow *w in [UIApplication sharedApplication].windows) [roots addObject:w];
-    } @catch (NSException *e) {}
-    for (UIView *root in roots) {
-        __block id kbView = nil;
-        void (^walk)(UIView *) = ^(UIView *view) {
-            if (kbView) return;
-            if (kbCls && [view isKindOfClass:kbCls]) { kbView = view; return; }
-            for (UIView *sub in view.subviews) walk(sub);
-        };
-        walk(root);
-        if (kbView) {
-            if ([kbView respondsToSelector:@selector(delegate)]) {
-                id d = [kbView performSelector:@selector(delegate)];
-                if (d) return d;   // 期望是 UIKeyboardImpl
+// 取当前激活的 UIKeyboardImpl 实例（多路兜底，绝不返回野指针）
+static id ksGetKeyboardImpl(void) {
+    Class impl = objc_getClass("UIKeyboardImpl");
+    if (!impl) return nil;
+    id kb = nil;
+    if ([impl respondsToSelector:@selector(activeInstance)])
+        kb = [impl performSelector:@selector(activeInstance)];
+    if (!kb && [impl respondsToSelector:@selector(sharedInstance)])
+        kb = [impl performSelector:@selector(sharedInstance)];
+    // 极端兜底：在键盘窗口里找 UIKeyboard 私有视图，取其 delegate
+    if (!kb) {
+        Class kbCls = objc_getClass("UIKeyboard");
+        @try {
+            NSMutableArray *roots = [NSMutableArray array];
+            for (UIWindow *w in [UIApplication sharedApplication].windows) [roots addObject:w];
+            for (UIView *root in roots) {
+                __block id kbView = nil;
+                void (^walk)(UIView *) = ^(UIView *view) {
+                    if (kbView) return;
+                    if (kbCls && [view isKindOfClass:kbCls]) { kbView = view; return; }
+                    for (UIView *sub in view.subviews) walk(sub);
+                };
+                walk(root);
+                if (kbView && [kbView respondsToSelector:@selector(delegate)]) {
+                    id d = [kbView performSelector:@selector(delegate)];
+                    if (d) return d;
+                }
             }
-        }
+        } @catch (NSException *e) {}
     }
-    // 兜底：UIKeyboard +activeKeyboard（部分版本仍可用），其本身或 delegate 即 impl
-    if (kbCls && [kbCls respondsToSelector:@selector(activeKeyboard)]) {
-        id kv = [kbCls performSelector:@selector(activeKeyboard)];
-        if (kv) {
-            if ([kv respondsToSelector:@selector(setInputModeToNextInPreferredListWithExecutionContext:)]) return kv;
-            if ([kv respondsToSelector:@selector(delegate)]) { id d = [kv performSelector:@selector(delegate)]; if (d) return d; }
-        }
-    }
-    return nil;
+    return kb;
 }
 
 static void ksActGlobe(id s, SEL _c) {
     @try {
-        id kb = ksFindKeyboardImpl(s);
-        if (kb && [kb respondsToSelector:@selector(setInputModeToNextInPreferredListWithExecutionContext:)]) {
-            // 不传 execution context：系统内部会按需自建；包在 try 里，调用失败也只是不切换
-            [kb performSelector:@selector(setInputModeToNextInPreferredListWithExecutionContext:) withObject:nil];
-            return;
+        id kb = ksGetKeyboardImpl();
+        if (!kb) { ksToast(@"无法切换输入法"); return; }
+        // 主路径：用 taskQueue 提供真实的 execution context 调用（官方内部姿势，绝不崩）
+        if ([kb respondsToSelector:@selector(taskQueue)] &&
+            [kb respondsToSelector:@selector(setInputModeToNextInPreferredListWithExecutionContext:)]) {
+            id queue = [kb performSelector:@selector(taskQueue)];
+            if (queue) {
+                [queue addTask:^(id context, int arg2) {
+                    @try {
+                        [kb setInputModeToNextInPreferredListWithExecutionContext:context];
+                    } @catch (NSException *e) {}
+                }];
+                return;
+            }
         }
-        // 兜底：老系统无参版本
-        if (kb && [kb respondsToSelector:@selector(setInputModeToNextInPreferredList)]) {
+        // 兜底：老系统（iOS15 及更早）的无参版本
+        if ([kb respondsToSelector:@selector(setInputModeToNextInPreferredList)]) {
             [kb performSelector:@selector(setInputModeToNextInPreferredList)];
             return;
         }
