@@ -388,25 +388,48 @@ static void ksActDismiss(id s, SEL _c) {
 // 地球键：切换到下一个输入法（把 HideGlobe 藏掉的那个 globe 以按钮形式复活）
 // iOS 16 私有入口：UIKeyboardImpl -setInputModeToNextInPreferredListWithExecutionContext:
 //   （老的无参 setInputModeToNextInPreferredList 在 iOS 16 已被取代）
-// 实例获取：iOS 16 上 +activeKeyboard 已不可靠（frida 实测非类方法），改由下方
-//   %hook UIKeyboardImpl -layoutSubviews 抓取当前实例存进 gKSKeyboardImpl（最稳）。
-static __weak id gKSKeyboardImpl = nil;
-%hook UIKeyboardImpl
-- (void)layoutSubviews {
-    gKSKeyboardImpl = self;   // 每次布局都刷新，确保拿到当前激活键盘实例
-    %orig;
+// 实例获取：iOS 16 上 +activeKeyboard 已不可用（frida 实测非类方法，运行期也拿不到）。
+//   改为从 dock 视图向上 / 在键盘窗口里找到 UIKeyboard 私有视图，取其 delegate（即
+//   UIKeyboardImpl 实例）。多路兜底，全程 @try 包住，绝不崩。
+
+// 在视图树里找 UIKeyboard 私有视图，返回它的 delegate（UIKeyboardImpl）
+static id ksFindKeyboardImpl(id fromView) {
+    Class kbCls = objc_getClass("UIKeyboard");
+    NSMutableArray *roots = [NSMutableArray array];
+    UIView *v = (UIView *)fromView;
+    while (v) { [roots addObject:v]; v = v.superview; }   // dock 向上：UIKeyboard 多半是祖先
+    @try {
+        for (UIWindow *w in [UIApplication sharedApplication].windows) [roots addObject:w];
+    } @catch (NSException *e) {}
+    for (UIView *root in roots) {
+        __block id kbView = nil;
+        void (^walk)(UIView *) = ^(UIView *view) {
+            if (kbView) return;
+            if (kbCls && [view isKindOfClass:kbCls]) { kbView = view; return; }
+            for (UIView *sub in view.subviews) walk(sub);
+        };
+        walk(root);
+        if (kbView) {
+            if ([kbView respondsToSelector:@selector(delegate)]) {
+                id d = [kbView performSelector:@selector(delegate)];
+                if (d) return d;   // 期望是 UIKeyboardImpl
+            }
+        }
+    }
+    // 兜底：UIKeyboard +activeKeyboard（部分版本仍可用），其本身或 delegate 即 impl
+    if (kbCls && [kbCls respondsToSelector:@selector(activeKeyboard)]) {
+        id kv = [kbCls performSelector:@selector(activeKeyboard)];
+        if (kv) {
+            if ([kv respondsToSelector:@selector(setInputModeToNextInPreferredListWithExecutionContext:)]) return kv;
+            if ([kv respondsToSelector:@selector(delegate)]) { id d = [kv performSelector:@selector(delegate)]; if (d) return d; }
+        }
+    }
+    return nil;
 }
-%end
 
 static void ksActGlobe(id s, SEL _c) {
     @try {
-        id kb = gKSKeyboardImpl;
-        // 兜底：万一 hook 还没抓到，再试一次 +activeKeyboard
-        if (!kb) {
-            Class impl = objc_getClass("UIKeyboardImpl");
-            if (impl && [impl respondsToSelector:@selector(activeKeyboard)])
-                kb = [impl performSelector:@selector(activeKeyboard)];
-        }
+        id kb = ksFindKeyboardImpl(s);
         if (kb && [kb respondsToSelector:@selector(setInputModeToNextInPreferredListWithExecutionContext:)]) {
             // 不传 execution context：系统内部会按需自建；包在 try 里，调用失败也只是不切换
             [kb performSelector:@selector(setInputModeToNextInPreferredListWithExecutionContext:) withObject:nil];
