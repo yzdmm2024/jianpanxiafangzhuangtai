@@ -385,6 +385,31 @@ static void ksActDismiss(id s, SEL _c) {
     } @catch (NSException *e) {}
 }
 
+// 地球键：切换到下一个输入法（把 HideGlobe 藏掉的那个 globe 以按钮形式复活）
+// iOS 16 私有入口：UIKeyboardImpl -setInputModeToNextInPreferredListWithExecutionContext:
+//   （老的无参 setInputModeToNextInPreferredList 在 iOS 16 已被取代）
+// 取激活键盘实例优先用 +activeKeyboard；拿不到就走兜底，全程 @try 包住绝不崩。
+static void ksActGlobe(id s, SEL _c) {
+    @try {
+        Class impl = objc_getClass("UIKeyboardImpl");
+        if (!impl) return;
+        id kb = nil;
+        if ([impl respondsToSelector:@selector(activeKeyboard)])
+            kb = [impl performSelector:@selector(activeKeyboard)];
+        if (kb && [kb respondsToSelector:@selector(setInputModeToNextInPreferredListWithExecutionContext:)]) {
+            // 不传 execution context：系统内部会按需自建；包在 try 里，调用失败也只是不切换
+            [kb performSelector:@selector(setInputModeToNextInPreferredListWithExecutionContext:) withObject:nil];
+            return;
+        }
+        // 兜底：老系统无参版本
+        if (kb && [kb respondsToSelector:@selector(setInputModeToNextInPreferredList)]) {
+            [kb performSelector:@selector(setInputModeToNextInPreferredList)];
+            return;
+        }
+        ksToast(@"无法切换输入法");
+    } @catch (NSException *e) {}
+}
+
 #pragma mark - AI 按钮（OpenAI 兼容接口：单击默认动作 / 长按菜单）
 
 // 预置模型：0=智谱 GLM-5.3-Flash，1=智谱 GLM-5.3，2=自定义（读 aiBaseURL/aiModel）
@@ -747,7 +772,7 @@ static char kKSBtmKey;
         // 自定义顺序（面板「按钮排序」写入 toolbarOrder；非法/缺项按默认补齐）
         NSArray *defOrder = @[@"showSelectAll", @"showCut", @"showPaste", @"showClipboard",
                               @"showPhrases", @"showCursor", @"showDismiss", @"showDeleteAll",
-                              @"showQuickAction", @"showAI"];
+                              @"showQuickAction", @"showAI", @"showGlobe"];
         NSMutableArray *finalOrder = [NSMutableArray array];
         id savedOrder = KSCopyPref(@"toolbarOrder");
         if ([savedOrder isKindOfClass:[NSArray class]]) {
@@ -757,11 +782,12 @@ static char kKSBtmKey;
         for (NSString *k in defOrder)
             if (![finalOrder containsObject:k]) [finalOrder addObject:k];
         // 重建签名：图标大小 + 图标间隔 + 顺序 + 全部功能开关，任一变化都重建整个工具栏
-        NSString *sig = [NSString stringWithFormat:@"%.1f|%.0f|%@|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d",
+        NSString *sig = [NSString stringWithFormat:@"%.1f|%.0f|%@|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d",
             iconSize, spacing, [finalOrder componentsJoinedByString:@","],
             KSBool(@"showSelectAll", YES), KSBool(@"showCut", YES), KSBool(@"showPaste", YES),
             KSBool(@"showClipboard", YES), KSBool(@"showPhrases", YES), KSBool(@"showCursor", YES),
-            KSBool(@"showDismiss", YES), KSBool(@"showDeleteAll", YES), KSBool(@"showQuickAction", NO), KSBool(@"showAI", NO)];
+            KSBool(@"showDismiss", YES), KSBool(@"showDeleteAll", YES), KSBool(@"showQuickAction", NO),
+            KSBool(@"showAI", NO), KSBool(@"showGlobe", YES)];
         UIStackView *stack = (UIStackView *)[self viewWithTag:KS_TOOLBAR_TAG];
         NSString *built = objc_getAssociatedObject(stack, &kKSBuiltSizeKey);
         if (stack && (![built isKindOfClass:[NSString class]] || ![built isEqualToString:sig])) {
@@ -816,6 +842,8 @@ static char kKSBtmKey;
                         [b addGestureRecognizer:lp];
                         [stack addArrangedSubview:b];
                     }
+                } else if ([k isEqualToString:@"showGlobe"] && KSBool(k, YES)) {
+                    b = ksMakeButton(@"globe", @"🌐", @selector(ksActGlobe), self, iconSize); if (b) [stack addArrangedSubview:b];
                 }
             }
 
@@ -885,6 +913,7 @@ static void ksPrefsChangedCB(CFNotificationCenterRef center, void *observer,
             {"ksActDismiss",    (IMP)ksActDismiss, "v@:"},
             {"ksActDeleteAll",  (IMP)ksActDeleteAll, "v@:"},
             {"ksActQuickLaunch",(IMP)ksActQuickLaunch, "v@:"},
+            {"ksActGlobe",      (IMP)ksActGlobe, "v@:"},        // 切换输入法（地球键）
             {"ksActAI:",        (IMP)ksActAI, "v@:@"},          // 带 sender（loading/取消）
             {"ksAILongPress:",  (IMP)ksAILongPress, "v@:@"},    // 长按手势
         };

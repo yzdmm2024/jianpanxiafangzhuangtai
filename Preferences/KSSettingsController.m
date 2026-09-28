@@ -92,7 +92,7 @@ static CGFloat KSFloat(NSString *key, CGFloat def) {
 static NSArray *ksDefaultButtonOrder(void) {
     return @[@"showSelectAll", @"showCut", @"showPaste", @"showClipboard",
              @"showPhrases", @"showCursor", @"showDismiss", @"showDeleteAll",
-             @"showQuickAction", @"showAI"];
+             @"showQuickAction", @"showAI", @"showGlobe"];
 }
 
 // 用户自定义顺序（toolbarOrder）与默认顺序合并：非法/缺失项按默认补齐
@@ -121,6 +121,7 @@ static NSDictionary *ksBtnSpecs(void) {
         @"showDeleteAll":  @[@"trash", @"清"],
         @"showQuickAction":@[@"rectangle.stack", @"切"],
         @"showAI":         @[@"sparkles", @"AI"],
+        @"showGlobe":      @[@"globe", @"🌐"],
     };
 }
 
@@ -210,7 +211,8 @@ static NSDictionary *ksBtnSpecs(void) {
             if ([k isEqualToString:@"showAI"] && !KSBool(@"aiEnabled", NO)) continue; // AI 总开关关闭不显示
             if ([k isEqualToString:@"showClipboard"] || [k isEqualToString:@"showDismiss"]
                 || [k isEqualToString:@"showDeleteAll"]
-                || [k isEqualToString:@"showQuickAction"] || [k isEqualToString:@"showAI"]) {
+                || [k isEqualToString:@"showQuickAction"] || [k isEqualToString:@"showAI"]
+                || [k isEqualToString:@"showGlobe"]) {
                 KSPREV_SEP();
             }
             NSArray *sf_fb = specs[k];
@@ -254,7 +256,7 @@ static NSDictionary *ksBtnSpecs(void) {
         // 签名含 iconSize + 每个开关独立一位，任何一项变化都触发重建
         CGFloat spacing = KSFloat(@"toolbarSpacing", 4);
         NSString *orderSig = [ksFinalButtonOrder() componentsJoinedByString:@","];
-        NSString *sig = [NSString stringWithFormat:@"%.1f|%.0f|%@|%d%d%d%d%d%d%d%d%d%d%d%d",
+        NSString *sig = [NSString stringWithFormat:@"%.1f|%.0f|%@|%d%d%d%d%d%d%d%d%d%d%d%d%d",
             iconSize, spacing, orderSig,
             KSBool(@"enabled", YES) && KSBool(@"toolbarEnabled", YES) ? 1 : 0,
             KSBool(@"showSelectAll", YES) ? 1 : 0,
@@ -266,7 +268,8 @@ static NSDictionary *ksBtnSpecs(void) {
             KSBool(@"showDismiss", YES) ? 1 : 0,
             KSBool(@"showDeleteAll", YES) ? 1 : 0,
             KSBool(@"showQuickAction", NO) ? 1 : 0,
-            (KSBool(@"showAI", NO) && KSBool(@"aiEnabled", NO)) ? 1 : 0];
+            (KSBool(@"showAI", NO) && KSBool(@"aiEnabled", NO)) ? 1 : 0,
+            KSBool(@"showGlobe", YES) ? 1 : 0];
         if (![sig isEqualToString:_builtSig]) {
             _builtSig = sig;
             [self rebuildBar];
@@ -419,7 +422,8 @@ static NSDictionary *ksBtnSpecs(void) {
                    @"showClipboard": @"剪贴板历史", @"showPhrases": @"快捷短语",
                    @"showCursor": @"光标左右移", @"showDismiss": @"收起键盘",
                    @"showDeleteAll": @"全删",
-                   @"showQuickAction": @"快捷启动", @"showAI": @"AI 按钮"};
+                   @"showQuickAction": @"快捷启动", @"showAI": @"AI 按钮",
+                   @"showGlobe": @"切换输入法"};
         _keys = [ksFinalButtonOrder() mutableCopy];
     }
     return self;
