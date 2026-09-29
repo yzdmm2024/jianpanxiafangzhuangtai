@@ -386,8 +386,9 @@ static void ksActDismiss(id s, SEL _c) {
 }
 
 // 地球键：切换到下一个输入法（把 HideGlobe 藏掉的那个 globe 以按钮形式复活）
-// iOS 16 私有入口：UIKeyboardImpl -setInputModeToNextInPreferredListWithExecutionContext:
-//   （老的无参 setInputModeToNextInPreferredList 在 iOS 16 已被取代）
+// 私有入口：UIKeyboardImpl -setInputModeToNextInPreferredListWithExecutionContext:（iOS 13+ 通用）
+//   iOS 12 及更早没有这个方法，回退无参 -setInputModeToNextInPreferredList
+// 兼容：本 tweak 最低支持 iOS 15（UIKeyboardDockView 自 iOS 11 即存在，挂载点通用）
 // 关键坑：该方法需要一个真实的 UIKeyboardTaskExecutionContext，传 nil 会在系统内部
 //   直接 EXC_BAD_ACCESS -> 闪退（@try 抓不住这种内存崩溃）。正确姿势是用 kb.taskQueue
 //   包一层：系统在自己的 task block 里会把合法的 context 传进来，正好喂给这个方法。
