@@ -48,9 +48,12 @@ static id KSCopyPref(NSString *key) {
         NSString *p = ksPrefsFilePath();
         if (p) {
             NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:p];
-            return d[key];
+            id v = d[key];
+            // 文件有该键 → 以文件为准（面板经 Roothide 重定向写到这里，进程内 cfprefsd 读不到）
+            if (v) return v;
         }
-        // 找不到 jbroot 文件时退回 CFPreferences（有 hook 的环境仍可用）
+        // 文件缺失该键时（典型：本进程直写 jbroot 文件失败，只有 CFPreferences 落了值）
+        // 回退 CFPreferences，保证「保存即生效、删除即消失」，不再因两处存储不一致把默认/旧值复活
         return (__bridge_transfer id)CFPreferencesCopyAppValue(
             (__bridge CFStringRef)key, (__bridge CFStringRef)KS_SUITE);
     } @catch (NSException *e) { return nil; }
@@ -356,17 +359,15 @@ static void ksActCut(id s, SEL _c) {
 static void ksActPaste(id s, SEL _c) {
     @try { [[UIApplication sharedApplication] sendAction:@selector(paste:) to:nil from:nil forEvent:nil]; } @catch (NSException *e) {}
 }
-// 丢弃输入法组合态（未确认的拼音/候选字）：先清 markedText 再 unmark，键盘候选条随之消失
+// 丢弃输入法组合态（未确认的拼音/候选字）：用 UITextInput 合规的 setMarkedText:@"" + unmarkText。
+// 注意：对 markedTextRange 调 replaceRange 在 WKWebView/部分输入框上会抛异常被吞，导致候选残留；
+// 这里改用 setMarkedText 把组合态置空再 unmark，稳。
 static void ksClearComposition(id<UITextInput> ti) {
     if (!ti) return;
     @try {
-        if ([ti respondsToSelector:@selector(markedTextRange)]) {
-            UITextRange *mr = [ti markedTextRange];
-            if (mr && !mr.isEmpty) {
-                @try { [ti replaceRange:mr withText:@""]; } @catch (NSException *e) {}
-            }
-        }
-        @try { if ([ti respondsToSelector:@selector(unmarkText)]) [ti unmarkText]; } @catch (NSException *e) {}
+        if ([ti respondsToSelector:@selector(setMarkedText:selectedRange:)])
+            [ti setMarkedText:@"" selectedRange:NSMakeRange(0, 0)];
+        if ([ti respondsToSelector:@selector(unmarkText)]) [ti unmarkText];
     } @catch (NSException *e) {}
 }
 
@@ -379,19 +380,30 @@ static void ksActDeleteAll(id s, SEL _c) {
             return;
         }
         id<UITextInput> ti = (id<UITextInput>)fr;
-        // 1) 先丢弃组合态（候选字），再清正文，避免正文清空后组合态仍残留
-        ksClearComposition(ti);
-        // 2) 键盘自身也持有组合态（候选条由 UIKeyboardImpl 驱动），一并清掉
+        // 候选条由键盘（UIKeyboardImpl）自身持有并渲染，必须先让它放弃组合态，
+        // 否则只清文本框、候选条仍挂在键盘上不消失
         id kb = ksGetKeyboardImpl();
-        if (kb && [kb conformsToProtocol:@protocol(UITextInput)]) ksClearComposition((id<UITextInput>)kb);
-        // 3) 清空整篇正文（已提交的文字）
+        if (kb && [kb respondsToSelector:@selector(setMarkedText:selectedRange:)]) {
+            @try { [kb setMarkedText:@"" selectedRange:NSMakeRange(0, 0)]; } @catch (NSException *e) {}
+        }
+        if (kb && [kb respondsToSelector:@selector(unmarkText)]) {
+            @try { [kb unmarkText]; } @catch (NSException *e) {}
+        }
+        // 清文本框组合态（拼音/候选）
+        ksClearComposition(ti);
+        // 清空整篇正文（已提交的文字）
         @try {
             UITextRange *all = [ti textRangeFromPosition:ti.beginningOfDocument toPosition:ti.endOfDocument];
             if (all) [ti replaceRange:all withText:@""];
         } @catch (NSException *e) {}
-        // 4) 兜底再清一次组合态（部分 App/WKWebView 顺序敏感）
+        // 兜底再清一次（部分 App/WKWebView 顺序敏感，键盘可能在清正文后又把组合态推回）
+        if (kb && [kb respondsToSelector:@selector(setMarkedText:selectedRange:)]) {
+            @try { [kb setMarkedText:@"" selectedRange:NSMakeRange(0, 0)]; } @catch (NSException *e) {}
+        }
+        if (kb && [kb respondsToSelector:@selector(unmarkText)]) {
+            @try { [kb unmarkText]; } @catch (NSException *e) {}
+        }
         ksClearComposition(ti);
-        if (kb && [kb conformsToProtocol:@protocol(UITextInput)]) ksClearComposition((id<UITextInput>)kb);
     } @catch (NSException *e) {}
 }
 static void ksActCursorLeft(id s, SEL _c) {
