@@ -8,8 +8,9 @@ static NSInteger const KS_TOOLBAR_TAG = 9174;
 // 设置面板改值后广播的 darwin 通知（KSSettingsController/KSPreviewCell 里同名 post）
 #define KS_DARWIN_NOTI "com.yzdmm.keyboardstatus.prefschanged"
 
-// 前向声明：ksToast 定义见文件后部，供文件靠前的方法（如 ksActDeleteAll）提前调用
+// 前向声明：ksToast / ksGetKeyboardImpl 定义见文件后部，供文件靠前的方法提前调用
 static void ksToast(NSString *msg);
+static id ksGetKeyboardImpl(void);
 
 #pragma mark - 偏好（跨进程：设置面板与 tweak 共用 KS_SUITE）
 
@@ -79,12 +80,14 @@ static void KSSetPref(NSString *key, id value) {
     @try {
         NSString *p = ksPrefsFilePath();
         if (p) {
-            // 直写 jbroot 文件（与面板/读侧一致）；失败再退回 CFPreferences
+            // 直写 jbroot 文件（与面板/读侧一致）
             NSMutableDictionary *d = [[NSDictionary dictionaryWithContentsOfFile:p] mutableCopy]
                                      ?: [NSMutableDictionary dictionary];
             if (value) d[key] = value; else [d removeObjectForKey:key];
-            if ([d writeToFile:p atomically:YES]) return;
+            [d writeToFile:p atomically:YES];
         }
+        // 同时写 CFPreferences 作兜底：避免「不同会话里 jbroot 路径命中不一致」导致
+        // 一处写入、另一处读到旧值（表现为设置/短语删了又还原）。两条路径都留最新值。
         CFPreferencesSetAppValue((__bridge CFStringRef)key,
                                  (__bridge CFPropertyListRef)value,
                                  (__bridge CFStringRef)KS_SUITE);
@@ -353,7 +356,21 @@ static void ksActCut(id s, SEL _c) {
 static void ksActPaste(id s, SEL _c) {
     @try { [[UIApplication sharedApplication] sendAction:@selector(paste:) to:nil from:nil forEvent:nil]; } @catch (NSException *e) {}
 }
-// 全删：清空当前输入框全部文本
+// 丢弃输入法组合态（未确认的拼音/候选字）：先清 markedText 再 unmark，键盘候选条随之消失
+static void ksClearComposition(id<UITextInput> ti) {
+    if (!ti) return;
+    @try {
+        if ([ti respondsToSelector:@selector(markedTextRange)]) {
+            UITextRange *mr = [ti markedTextRange];
+            if (mr && !mr.isEmpty) {
+                @try { [ti replaceRange:mr withText:@""]; } @catch (NSException *e) {}
+            }
+        }
+        @try { if ([ti respondsToSelector:@selector(unmarkText)]) [ti unmarkText]; } @catch (NSException *e) {}
+    } @catch (NSException *e) {}
+}
+
+// 全删：清空正文 + 丢弃未确认候选（markedText），键盘候选条一并清除
 static void ksActDeleteAll(id s, SEL _c) {
     @try {
         UIResponder *fr = ksFindFirstResponder();
@@ -362,14 +379,19 @@ static void ksActDeleteAll(id s, SEL _c) {
             return;
         }
         id<UITextInput> ti = (id<UITextInput>)fr;
-        UITextRange *all = [ti textRangeFromPosition:ti.beginningOfDocument toPosition:ti.endOfDocument];
-        if (all) [ti replaceRange:all withText:@""];
-        // 清掉未确认的拼音/候选（markedText），否则键盘联想候选条会残留「还在打」的字
+        // 1) 先丢弃组合态（候选字），再清正文，避免正文清空后组合态仍残留
+        ksClearComposition(ti);
+        // 2) 键盘自身也持有组合态（候选条由 UIKeyboardImpl 驱动），一并清掉
+        id kb = ksGetKeyboardImpl();
+        if (kb && [kb conformsToProtocol:@protocol(UITextInput)]) ksClearComposition((id<UITextInput>)kb);
+        // 3) 清空整篇正文（已提交的文字）
         @try {
-            UITextRange *mr = [ti markedTextRange];
-            if (mr) [ti replaceRange:mr withText:@""];
+            UITextRange *all = [ti textRangeFromPosition:ti.beginningOfDocument toPosition:ti.endOfDocument];
+            if (all) [ti replaceRange:all withText:@""];
         } @catch (NSException *e) {}
-        @try { if ([ti respondsToSelector:@selector(unmarkText)]) [ti unmarkText]; } @catch (NSException *e) {}
+        // 4) 兜底再清一次组合态（部分 App/WKWebView 顺序敏感）
+        ksClearComposition(ti);
+        if (kb && [kb conformsToProtocol:@protocol(UITextInput)]) ksClearComposition((id<UITextInput>)kb);
     } @catch (NSException *e) {}
 }
 static void ksActCursorLeft(id s, SEL _c) {
@@ -765,18 +787,114 @@ static void ksActAI(id s, SEL _c, id sender) {    @try {
     } @catch (NSException *e) {}
 }
 
-// 文言文按钮：复用 AI 管线，把选中文字转文言文；loading 中再点 = 取消
+// 本地文言文转换：内置词典，最长匹配优先逐字替换，不联网、不依赖 AI
+// 注：这是「文言风味」转换，非严格古文，胜在即时、离线、零配置
+static NSString *ksWenyanConvert(NSString *s) {
+    if (s.length == 0) return s;
+    static NSDictionary *map = nil;
+    static NSArray *keys = nil;     // 按长度降序，保证「不是」先于「不」等
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        map = @{
+            // —— 代词 ——
+            @"我们": @"吾辈", @"你们": @"尔等", @"他们": @"彼等",
+            @"自己": @"己", @"什么": @"何", @"怎么": @"何", @"为什么": @"何故",
+            @"谁": @"孰", @"哪里": @"何所", @"这里": @"此", @"那里": @"彼",
+            @"这个": @"此", @"那个": @"彼", @"这些": @"此辈", @"那些": @"彼辈",
+            @"我": @"余", @"你": @"汝", @"他": @"其", @"她": @"其", @"它": @"其",
+            // —— 虚词 / 否定 ——
+            @"不是": @"非", @"不要": @"勿", @"不能": @"不可", @"不敢": @"不敢",
+            @"没有": @"无", @"不": @"弗", @"否": @"否", @"莫": @"莫",
+            @"的": @"之", @"地": @"然", @"得": @"得",
+            @"了": @"矣", @"吗": @"乎", @"呢": @"哉", @"吧": @"乎", @"啊": @"兮", @"呀": @"兮",
+            // —— 连词 / 副词 ——
+            @"如果": @"若", @"因为": @"以", @"所以": @"故", @"但是": @"然",
+            @"而且": @"且", @"并且": @"且", @"或者": @"或", @"虽然": @"虽",
+            @"于是": @"遂", @"然后": @"既而", @"因此": @"是以", @"从而": @"由是",
+            @"可以": @"可", @"应该": @"宜", @"需要": @"须", @"想要": @"欲",
+            @"就": @"即", @"才": @"方", @"已经": @"既", @"正在": @"方",
+            @"将要": @"且", @"突然": @"忽", @"立刻": @"立", @"慢慢": @"徐",
+            @"都": @"皆", @"全部": @"悉", @"所有": @"凡", @"许多": @"众",
+            @"一些": @"些许", @"很少": @"鲜", @"一切": @"万有",
+            // —— 时间 ——
+            @"现在": @"今", @"以前": @"昔", @"以后": @"日后", @"今天": @"今日",
+            @"明天": @"明日", @"昨天": @"昨日", @"早上": @"旦", @"晚上": @"暮",
+            @"时候": @"时", @"不久": @"须臾", @"永远": @"恒",
+            // —— 常用动词 ——
+            @"说": @"曰", @"告诉": @"语", @"问": @"问", @"回答": @"答",
+            @"看": @"观", @"看见": @"见", @"听": @"闻", @"吃": @"食",
+            @"喝": @"饮", @"睡觉": @"寐", @"醒": @"寤", @"死": @"殁",
+            @"做": @"为", @"使用": @"用", @"给": @"与", @"拿": @"取",
+            @"得到": @"得", @"失去": @"失", @"去": @"往", @"来": @"来",
+            @"回": @"归", @"走": @"行", @"跑": @"奔", @"知道": @"知",
+            @"明白": @"悟", @"喜欢": @"喜", @"讨厌": @"恶", @"思考": @"思",
+            @"学习": @"学", @"工作": @"事", @"休息": @"休", @"等候": @"待",
+            // —— 名词 ——
+            @"朋友": @"友", @"孩子": @"子", @"老师": @"师", @"学生": @"生",
+            @"父亲": @"父", @"母亲": @"母", @"妻子": @"妻", @"丈夫": @"夫",
+            @"国家": @"国", @"天下": @"天下", @"世界": @"世间", @"事情": @"事",
+            @"问题": @"题", @"方法": @"法", @"原因": @"故", @"结果": @"果",
+            @"计划": @"计", @"想法": @"意", @"地方": @"处", @"时间": @"时",
+            @"书信": @"书", @"话语": @"言", @"文章": @"文",
+            // —— 形容词 ——
+            @"高兴": @"悦", @"生气": @"怒", @"悲伤": @"哀", @"害怕": @"惧",
+            @"大": @"巨", @"小": @"微", @"新": @"新", @"旧": @"故", @"好": @"佳",
+            @"坏": @"恶", @"快": @"疾", @"慢": @"缓", @"高": @"高", @"低": @"下",
+            @"长": @"修", @"短": @"短", @"多": @"众", @"少": @"寡",
+            @"美丽": @"丽", @"聪明": @"慧", @"愚蠢": @"愚", @"富裕": @"富",
+            @"贫穷": @"贫", @"健康": @"康", @"危险": @"危", @"安全": @"安",
+            // —— 介词 / 方位 ——
+            @"在": @"于", @"从": @"自", @"到": @"至", @"和": @"与",
+            @"跟": @"与", @"对": @"对", @"把": @"将", @"让": @"使", @"被": @"为",
+            @"向": @"向", @"比": @"较", @"为": @"为",
+        };
+        // 按字符长度降序排序，长词优先匹配，避免「不」抢在「不是」前
+        keys = [[map allKeys] sortedArrayUsingComparator:^NSComparisonResult(NSString *a, NSString *b){
+            NSInteger la = (NSInteger)a.length, lb = (NSInteger)b.length;
+            if (la > lb) return NSOrderedAscending;
+            if (la < lb) return NSOrderedDescending;
+            return NSOrderedSame;
+        }];
+    });
+    NSMutableString *out = [NSMutableString string];
+    NSUInteger i = 0, n = s.length;
+    while (i < n) {
+        BOOL matched = NO;
+        for (NSString *k in keys) {
+            if (i + k.length <= n &&
+                [[s substringWithRange:NSMakeRange(i, k.length)] isEqualToString:k]) {
+                [out appendString:map[k]];
+                i += k.length;
+                matched = YES;
+                break;
+            }
+        }
+        if (!matched) {
+            [out appendString:[s substringWithRange:NSMakeRange(i, 1)]];
+            i += 1;
+        }
+    }
+    return out;
+}
+
+// 文言文按钮：本地词典一键转换选中文字（不联网、无需配置 AI）
 static void ksActWenyan(id s, SEL _c, id sender) {
     @try {
-        UIButton *btn = [sender isKindOfClass:[UIButton class]] ? (UIButton *)sender : nil;
-        if ([btn isKindOfClass:[UIButton class]] && ksAIIsLoading(btn)) {
-            NSURLSessionDataTask *task = objc_getAssociatedObject(btn, &kKSTaskKey);
-            [task cancel];
-            ksAISetLoading(btn, NO);
-            ksToast(@"已取消 AI 请求");
+        UIResponder *fr = ksFindFirstResponder();
+        if (!fr || ![fr conformsToProtocol:@protocol(UITextInput)]) {
+            ksToast(@"请先点进输入框");
             return;
         }
-        ksAIExecute(@"wenyan", btn);
+        id<UITextInput> ti = (id<UITextInput>)fr;
+        NSString *sel = [ti textInRange:ti.selectedTextRange] ?: @"";
+        if (sel.length == 0) {
+            ksToast(@"请先选中要转换的文字");
+            return;
+        }
+        NSString *res = ksWenyanConvert(sel);
+        if (res.length == 0) return;
+        @try { [ti replaceRange:ti.selectedTextRange withText:res]; }
+        @catch (NSException *e) { ksToast(e.reason ?: @"转换失败"); }
     } @catch (NSException *e) {}
 }
 
