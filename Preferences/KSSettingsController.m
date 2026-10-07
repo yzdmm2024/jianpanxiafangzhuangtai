@@ -92,7 +92,7 @@ static CGFloat KSFloat(NSString *key, CGFloat def) {
 static NSArray *ksDefaultButtonOrder(void) {
     return @[@"showSelectAll", @"showCut", @"showPaste", @"showClipboard",
              @"showPhrases", @"showCursor", @"showDismiss", @"showDeleteAll",
-             @"showQuickAction", @"showAI", @"showGlobe"];
+             @"showQuickAction", @"showAI", @"showWenyan", @"showGlobe"];
 }
 
 // 用户自定义顺序（toolbarOrder）与默认顺序合并：非法/缺失项按默认补齐
@@ -121,6 +121,7 @@ static NSDictionary *ksBtnSpecs(void) {
         @"showDeleteAll":  @[@"trash", @"清"],
         @"showQuickAction":@[@"rectangle.stack", @"切"],
         @"showAI":         @[@"sparkles", @"AI"],
+        @"showWenyan":     @[@"", @"文"],
         @"showGlobe":      @[@"globe", @"🌐"],
     };
 }
@@ -206,13 +207,13 @@ static NSDictionary *ksBtnSpecs(void) {
                 if (b) [_bar addArrangedSubview:b];
                 continue;
             }
-            BOOL def = [k isEqualToString:@"showQuickAction"] || [k isEqualToString:@"showAI"] ? NO : YES;
+            BOOL def = [k isEqualToString:@"showQuickAction"] || [k isEqualToString:@"showAI"] || [k isEqualToString:@"showWenyan"] ? NO : YES;
             if (!KSBool(k, def)) continue;
             if ([k isEqualToString:@"showAI"] && !KSBool(@"aiEnabled", NO)) continue; // AI 总开关关闭不显示
             if ([k isEqualToString:@"showClipboard"] || [k isEqualToString:@"showDismiss"]
                 || [k isEqualToString:@"showDeleteAll"]
                 || [k isEqualToString:@"showQuickAction"] || [k isEqualToString:@"showAI"]
-                || [k isEqualToString:@"showGlobe"]) {
+                || [k isEqualToString:@"showWenyan"] || [k isEqualToString:@"showGlobe"]) {
                 KSPREV_SEP();
             }
             NSArray *sf_fb = specs[k];
@@ -269,7 +270,8 @@ static NSDictionary *ksBtnSpecs(void) {
             KSBool(@"showDeleteAll", YES) ? 1 : 0,
             KSBool(@"showQuickAction", NO) ? 1 : 0,
             (KSBool(@"showAI", NO) && KSBool(@"aiEnabled", NO)) ? 1 : 0,
-            KSBool(@"showGlobe", YES) ? 1 : 0];
+            KSBool(@"showGlobe", YES) ? 1 : 0,
+            KSBool(@"showWenyan", NO) ? 1 : 0];
         if (![sig isEqualToString:_builtSig]) {
             _builtSig = sig;
             [self rebuildBar];
@@ -423,7 +425,7 @@ static NSDictionary *ksBtnSpecs(void) {
                    @"showCursor": @"光标左右移", @"showDismiss": @"收起键盘",
                    @"showDeleteAll": @"全删",
                    @"showQuickAction": @"快捷启动", @"showAI": @"AI 按钮",
-                   @"showGlobe": @"切换输入法"};
+                   @"showWenyan": @"文言文", @"showGlobe": @"切换输入法"};
         _keys = [ksFinalButtonOrder() mutableCopy];
     }
     return self;

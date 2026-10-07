@@ -55,6 +55,20 @@
 			<string>验证码/密码时自动隐藏</string>
 		</dict>
 		<dict>
+			<key>PostNotification</key>
+			<string>com.yzdmm.keyboardstatus.prefschanged</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.yzdmm.keyboardstatus</string>
+			<key>key</key>
+			<string>showWenyan</string>
+			<key>label</key>
+			<string>文言文按钮（选中文字转文言，需配置 AI）</string>
+		</dict>
+		<dict>
 			<key>cell</key>
 			<string>PSSwitchCell</string>
 			<key>default</key>
@@ -570,6 +584,6 @@
 		</dict>
 	</array>
 	<key>title</key>
-	<string>键盘下方状态 1.3.3</string>
+	<string>键盘下方状态 1.3.4</string>
 </dict>
 </plist>

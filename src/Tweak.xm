@@ -127,8 +127,9 @@ static NSArray *ksDefaultPhrases(void) {
 
 static NSMutableArray *ksLoadPhrases(void) {
     @try {
-        NSArray *saved = KSCopyPref(@"quickPhrases");
-        if ([saved isKindOfClass:[NSArray class]] && saved.count) return [saved mutableCopy];
+        // 存过就尊重（含空数组：用户已清空，不该再把默认短语塞回来）
+        id saved = KSCopyPref(@"quickPhrases");
+        if ([saved isKindOfClass:[NSArray class]]) return [saved mutableCopy];
     } @catch (NSException *e) {}
     return [ksDefaultPhrases() mutableCopy];
 }
@@ -363,6 +364,12 @@ static void ksActDeleteAll(id s, SEL _c) {
         id<UITextInput> ti = (id<UITextInput>)fr;
         UITextRange *all = [ti textRangeFromPosition:ti.beginningOfDocument toPosition:ti.endOfDocument];
         if (all) [ti replaceRange:all withText:@""];
+        // 清掉未确认的拼音/候选（markedText），否则键盘联想候选条会残留「还在打」的字
+        @try {
+            UITextRange *mr = [ti markedTextRange];
+            if (mr) [ti replaceRange:mr withText:@""];
+        } @catch (NSException *e) {}
+        @try { if ([ti respondsToSelector:@selector(unmarkText)]) [ti unmarkText]; } @catch (NSException *e) {}
     } @catch (NSException *e) {}
 }
 static void ksActCursorLeft(id s, SEL _c) {
@@ -524,6 +531,7 @@ static NSString *ksAIBuiltinPrompt(NSString *act) {
         @"e2z":     @"请把下面的英文翻译成中文，只输出译文：\n\n%@\n",
         @"ja":      @"请把下面的文本在中文与日文之间互译（中文译成日文，日文译成中文），只输出译文：\n\n%@\n",
         @"code":    @"你是一名资深程序员。请分析下面的代码或报错信息，给出优化后的代码或排查解决步骤：\n\n%@\n",
+        @"wenyan":  @"请把下面这段现代中文改写成典雅的文言文，尽量用对仗与典故、保留原意，只输出文言文结果，不要任何解释或标点补充说明：\n\n%@\n",
     };
     return m[act];
 }
@@ -534,6 +542,7 @@ static NSString *ksAITitle(NSString *act) {
         @"summary": @"📋 总结摘要", @"points": @"🔖 提取要点", @"fix": @"🩹 语病纠错",
         @"explain": @"💬 解释文本", @"z2e": @"🌐 中译英", @"e2z": @"🌐 英译中",
         @"ja": @"🌐 中日互译", @"code": @"💻 代码优化/报错分析",
+        @"wenyan": @"📜 转文言文",
         @"custom1": @"⭐ 自定义模板 1", @"custom2": @"⭐ 自定义模板 2",
     };
     return m[act] ?: act;
@@ -741,8 +750,7 @@ static void ksAIExecute(NSString *act, UIButton *btn) {
 }
 
 // 单击：执行默认动作；loading 中 = 取消请求
-static void ksActAI(id s, SEL _c, id sender) {
-    @try {
+static void ksActAI(id s, SEL _c, id sender) {    @try {
         UIButton *btn = (UIButton *)sender;
         if ([btn isKindOfClass:[UIButton class]] && ksAIIsLoading(btn)) {
             NSURLSessionDataTask *task = objc_getAssociatedObject(btn, &kKSTaskKey);
@@ -754,6 +762,21 @@ static void ksActAI(id s, SEL _c, id sender) {
         NSString *act = KSCopyPref(@"aiDefaultAction");
         if (![act isKindOfClass:[NSString class]] || !act.length) act = @"polish";
         ksAIExecute(act, btn);
+    } @catch (NSException *e) {}
+}
+
+// 文言文按钮：复用 AI 管线，把选中文字转文言文；loading 中再点 = 取消
+static void ksActWenyan(id s, SEL _c, id sender) {
+    @try {
+        UIButton *btn = [sender isKindOfClass:[UIButton class]] ? (UIButton *)sender : nil;
+        if ([btn isKindOfClass:[UIButton class]] && ksAIIsLoading(btn)) {
+            NSURLSessionDataTask *task = objc_getAssociatedObject(btn, &kKSTaskKey);
+            [task cancel];
+            ksAISetLoading(btn, NO);
+            ksToast(@"已取消 AI 请求");
+            return;
+        }
+        ksAIExecute(@"wenyan", btn);
     } @catch (NSException *e) {}
 }
 
@@ -861,7 +884,7 @@ static char kKSBtmKey;
         // 自定义顺序（面板「按钮排序」写入 toolbarOrder；非法/缺项按默认补齐）
         NSArray *defOrder = @[@"showSelectAll", @"showCut", @"showPaste", @"showClipboard",
                               @"showPhrases", @"showCursor", @"showDismiss", @"showDeleteAll",
-                              @"showQuickAction", @"showAI", @"showGlobe"];
+                              @"showQuickAction", @"showAI", @"showWenyan", @"showGlobe"];
         NSMutableArray *finalOrder = [NSMutableArray array];
         id savedOrder = KSCopyPref(@"toolbarOrder");
         if ([savedOrder isKindOfClass:[NSArray class]]) {
@@ -876,7 +899,7 @@ static char kKSBtmKey;
             KSBool(@"showSelectAll", YES), KSBool(@"showCut", YES), KSBool(@"showPaste", YES),
             KSBool(@"showClipboard", YES), KSBool(@"showPhrases", YES), KSBool(@"showCursor", YES),
             KSBool(@"showDismiss", YES), KSBool(@"showDeleteAll", YES), KSBool(@"showQuickAction", NO),
-            KSBool(@"showAI", NO), KSBool(@"showGlobe", YES)];
+            KSBool(@"showAI", NO), KSBool(@"showWenyan", NO), KSBool(@"showGlobe", YES)];
         UIStackView *stack = (UIStackView *)[self viewWithTag:KS_TOOLBAR_TAG];
         NSString *built = objc_getAssociatedObject(stack, &kKSBuiltSizeKey);
         if (stack && (![built isKindOfClass:[NSString class]] || ![built isEqualToString:sig])) {
@@ -931,6 +954,9 @@ static char kKSBtmKey;
                         [b addGestureRecognizer:lp];
                         [stack addArrangedSubview:b];
                     }
+                } else if ([k isEqualToString:@"showWenyan"] && KSBool(k, NO)) {
+                    // 文言文按钮：复用 AI 管线，单字「文」做符号；未配置 AI 时按下会提示
+                    b = ksMakeButton(@"", @"文", @selector(ksActWenyan:), self, iconSize); if (b) [stack addArrangedSubview:b];
                 } else if ([k isEqualToString:@"showGlobe"] && KSBool(k, YES)) {
                     b = ksMakeButton(@"globe", @"🌐", @selector(ksActGlobe), self, iconSize); if (b) [stack addArrangedSubview:b];
                 }
@@ -1005,6 +1031,7 @@ static void ksPrefsChangedCB(CFNotificationCenterRef center, void *observer,
             {"ksActGlobe",      (IMP)ksActGlobe, "v@:"},        // 切换输入法（地球键）
             {"ksActAI:",        (IMP)ksActAI, "v@:@"},          // 带 sender（loading/取消）
             {"ksAILongPress:",  (IMP)ksAILongPress, "v@:@"},    // 长按手势
+            {"ksActWenyan:",    (IMP)ksActWenyan, "v@:@"},      // 文言文按钮（复用 AI 管线）
         };
         for (size_t i = 0; i < sizeof(methods)/sizeof(methods[0]); i++) {
             SEL sel = sel_registerName(methods[i].name);
