@@ -166,6 +166,38 @@ static UIResponder *ksFindFirstResponder(void) {
     } @catch (NSException *e) { return nil; }
 }
 
+// 智能隐藏判断：验证码/密码/纯数字键盘、游戏隐藏输入框等场景下不该显示工具栏
+// 依据当前第一响应者的输入特征判断，正常打字（QWERTY 文本框）不受影响
+static BOOL ksShouldAutoHide(void) {
+    @try {
+        UIResponder *fr = ksFindFirstResponder();
+        if (!fr) return NO;
+        // 游戏常用招数：拉起键盘的 UITextField 是隐藏/全透明/极小尺寸的（自己画键盘盖上去）
+        // 这种场景系统键盘被盖住，工具栏只会从缝隙里漏出来 → 判定为该隐藏
+        if ([fr isKindOfClass:[UIView class]]) {
+            UIView *v = (UIView *)fr;
+            if (v.hidden || v.alpha < 0.05 ||
+                v.bounds.size.width < 10 || v.bounds.size.height < 10) return YES;
+        }
+        // 不是文本输入trait的（自定义 responder）不乱猜，保持显示
+        if (![fr conformsToProtocol:@protocol(UITextInputTraits)]) return NO;
+        id<UITextInputTraits> t = (id<UITextInputTraits>)fr;
+        // 密码框
+        if ([t respondsToSelector:@selector(isSecureTextEntry)] && t.isSecureTextEntry) return YES;
+        // 系统验证码字段（短信自动填充的 OneTimeCode）
+        if (@available(iOS 10.0, *)) {
+            if ([t respondsToSelector:@selector(textContentType)] &&
+                [t.textContentType isEqualToString:UITextContentTypeOneTimeCode]) return YES;
+        }
+        // 数字/小数点/电话键盘（验证码输入几乎全是这几类）
+        UIKeyboardType kt = UIKeyboardTypeDefault;
+        if ([t respondsToSelector:@selector(keyboardType)]) kt = t.keyboardType;
+        if (kt == UIKeyboardTypeNumberPad || kt == UIKeyboardTypeDecimalPad ||
+            kt == UIKeyboardTypePhonePad || kt == UIKeyboardTypeASCIICapableNumberPad) return YES;
+        return NO;
+    } @catch (NSException *e) { return NO; }
+}
+
 static UIViewController *ksTopViewController(void) {
     @try {
         UIWindow *kw = ksKeyWindow();
@@ -808,6 +840,17 @@ static char kKSBtmKey;
             UIView *old = [self viewWithTag:KS_TOOLBAR_TAG];
             if (old) [old removeFromSuperview];
             return;
+        }
+
+        // 智能隐藏：验证码/密码/数字键盘/游戏自定义键盘场景不显示（设置里「智能隐藏」开关控制）
+        if (KSBool(@"smartHide", YES) && ksShouldAutoHide()) {
+            UIView *tb = [self viewWithTag:KS_TOOLBAR_TAG];
+            if (tb) tb.hidden = YES;
+            return;
+        }
+        {
+            UIView *tb = [self viewWithTag:KS_TOOLBAR_TAG];
+            if (tb) tb.hidden = NO;
         }
 
         CGFloat iconSize = KSFloat(@"iconSize", 15);

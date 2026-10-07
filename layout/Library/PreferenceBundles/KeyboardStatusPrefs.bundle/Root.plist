@@ -26,7 +26,7 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>关掉某项立即生效，上面的预览同步显示（其他 App 的键盘也会实时跟随）。</string>
+			<string>关掉某项立即生效，上面的预览同步显示（其他 App 的键盘也会实时跟随）。「验证码/密码时自动隐藏」= 输入验证码、密码、纯数字/电话键盘，以及游戏自绘键盘（隐藏输入框）的场景下，工具栏不显示；正常打字时照常出现。</string>
 			<key>label</key>
 			<string>工具栏开关</string>
 		</dict>
@@ -41,6 +41,18 @@
 			<string>toolbarEnabled</string>
 			<key>label</key>
 			<string>显示工具栏</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.yzdmm.keyboardstatus</string>
+			<key>key</key>
+			<string>smartHide</string>
+			<key>label</key>
+			<string>验证码/密码时自动隐藏</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -558,6 +570,6 @@
 		</dict>
 	</array>
 	<key>title</key>
-	<string>键盘下方状态 1.3.2</string>
+	<string>键盘下方状态 1.3.3</string>
 </dict>
 </plist>
