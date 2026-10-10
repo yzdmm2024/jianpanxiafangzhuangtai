@@ -272,6 +272,111 @@ static void ksShowClipboardHistory(id self) {
     } @catch (NSException *e) {}
 }
 
+// 批量导入：粘贴多行文本，每行一条，自动忽略空行与去重；可勾选覆盖原有
+@interface KSPhraseImportVC : UIViewController
+@property (nonatomic, copy) void (^onImport)(NSArray<NSString *> *newPhrases, BOOL replace);
+@end
+
+@implementation KSPhraseImportVC {
+    UITextView *_tv;
+    UISwitch   *_replaceSwitch;
+    UIBarButtonItem *_importItem;
+    UILabel    *_hint;
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"批量导入短语";
+    self.view.backgroundColor = [UIColor systemBackgroundColor];
+
+    _tv = [[UITextView alloc] init];
+    _tv.font = [UIFont systemFontOfSize:15];
+    _tv.translatesAutoresizingMaskIntoConstraints = NO;
+    _tv.layer.cornerRadius = 8;
+    _tv.layer.borderWidth = 1;
+    _tv.layer.borderColor = [[UIColor systemGray4Color] CGColor];
+    _tv.text = [UIPasteboard generalPasteboard].string ?: @""; // 自动填入剪贴板，复制即导入
+    _tv.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
+    [self.view addSubview:_tv];
+
+    _hint = [[UILabel alloc] init];
+    _hint.font = [UIFont systemFontOfSize:12];
+    _hint.textColor = [UIColor secondaryLabelColor];
+    _hint.numberOfLines = 0;
+    _hint.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:_hint];
+
+    _replaceSwitch = [[UISwitch alloc] init];
+    _replaceSwitch.translatesAutoresizingMaskIntoConstraints = NO;
+    UILabel *rl = [[UILabel alloc] init];
+    rl.text = @"覆盖原有短语（清空后再导入）";
+    rl.font = [UIFont systemFontOfSize:14];
+    rl.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:_replaceSwitch];
+    [self.view addSubview:rl];
+
+    UILayoutGuide *mg = self.view.layoutMarginsGuide;
+    [NSLayoutConstraint activateConstraints:@[
+        [_tv.topAnchor constraintEqualToAnchor:mg.topAnchor constant:8],
+        [_tv.leadingAnchor constraintEqualToAnchor:mg.leadingAnchor],
+        [_tv.trailingAnchor constraintEqualToAnchor:mg.trailingAnchor],
+        [_tv.heightAnchor constraintEqualToConstant:240],
+        [rl.topAnchor constraintEqualToAnchor:_tv.bottomAnchor constant:12],
+        [rl.leadingAnchor constraintEqualToAnchor:mg.leadingAnchor],
+        [_replaceSwitch.centerYAnchor constraintEqualToAnchor:rl.centerYAnchor],
+        [_replaceSwitch.leadingAnchor constraintEqualToAnchor:rl.trailingAnchor constant:8],
+        [_hint.topAnchor constraintEqualToAnchor:rl.bottomAnchor constant:8],
+        [_hint.leadingAnchor constraintEqualToAnchor:mg.leadingAnchor],
+        [_hint.trailingAnchor constraintEqualToAnchor:mg.trailingAnchor],
+    ]];
+
+    self.navigationItem.leftBarButtonItem =
+        [[UIBarButtonItem alloc] initWithTitle:@"取消" style:UIBarButtonItemStylePlain
+                                       target:self action:@selector(cancel)];
+    _importItem = [[UIBarButtonItem alloc] initWithTitle:@"导入" style:UIBarButtonItemStyleDone
+                                                 target:self action:@selector(doImport)];
+    self.navigationItem.rightBarButtonItem = _importItem;
+
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(updateCount)
+                                          name:UITextViewTextDidChangeNotification object:_tv];
+    [self updateCount];
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+// 按任意换行符（\n / \r / 其他）分行，trim 后丢弃空行
+- (NSArray<NSString *> *)parsedPhrases {
+    NSString *raw = _tv.text ?: @"";
+    NSArray *lines = [raw componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
+    NSMutableArray *out = [NSMutableArray array];
+    for (NSString *ln in lines) {
+        NSString *t = [ln stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (t.length) [out addObject:t];
+    }
+    return out;
+}
+
+- (void)updateCount {
+    NSInteger n = [self parsedPhrases].count;
+    _importItem.title = n > 0 ? [NSString stringWithFormat:@"导入 %ld 条", (long)n] : @"导入";
+    _hint.text = n > 0
+        ? [NSString stringWithFormat:@"将按换行分隔导入 %ld 条（已自动忽略空行，重复项不重复添加）。", (long)n]
+        : @"每行一条短语，粘贴多行文本即可一次性导入。已自动填入剪贴板内容。";
+}
+
+- (void)cancel { [self dismissViewControllerAnimated:YES completion:nil]; }
+
+- (void)doImport {
+    NSArray *arr = [self parsedPhrases];
+    if (arr.count == 0) { [self cancel]; return; }
+    if (self.onImport) self.onImport(arr, _replaceSwitch.isOn);
+    [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+@end
+
 @interface KSPhraseEditor : UITableViewController
 @end
 @implementation KSPhraseEditor {
@@ -282,9 +387,13 @@ static void ksShowClipboardHistory(id self) {
     if (self) {
         _phrases = ksLoadPhrases();
         self.title = @"快捷短语";
-        self.navigationItem.rightBarButtonItem =
+        UIBarButtonItem *addBtn =
             [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemAdd
                                                          target:self action:@selector(addPhrase)];
+        UIBarButtonItem *batchBtn =
+            [[UIBarButtonItem alloc] initWithTitle:@"批量" style:UIBarButtonItemStylePlain
+                                           target:self action:@selector(batchImport)];
+        self.navigationItem.rightBarButtonItems = @[addBtn, batchBtn];
         self.navigationItem.leftBarButtonItem =
             [[UIBarButtonItem alloc] initWithTitle:@"完成" style:UIBarButtonItemStyleDone
                                            target:self action:@selector(done)];
@@ -332,6 +441,19 @@ static void ksShowClipboardHistory(id self) {
                                   withRowAnimation:UITableViewRowAnimationAutomatic]; }
     }]];
     [self presentViewController:a animated:YES completion:nil];
+}
+- (void)batchImport {
+    KSPhraseImportVC *imp = [[KSPhraseImportVC alloc] init];
+    __weak typeof(self) w = self;
+    imp.onImport = ^(NSArray<NSString *> *newPhrases, BOOL replace) {
+        if (replace) [w->_phrases removeAllObjects];
+        for (NSString *p in newPhrases)
+            if (![w->_phrases containsObject:p]) [w->_phrases addObject:p]; // 去重
+        ksSavePhrases(w->_phrases);
+        [w.tableView reloadData];
+    };
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:imp];
+    [self presentViewController:nav animated:YES completion:nil];
 }
 - (void)done { [self dismissViewControllerAnimated:YES completion:nil]; }
 @end
