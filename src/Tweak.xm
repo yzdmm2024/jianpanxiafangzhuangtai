@@ -446,11 +446,13 @@ static void ksShowClipboardHistory(id self) {
     KSPhraseImportVC *imp = [[KSPhraseImportVC alloc] init];
     __weak typeof(self) w = self;
     imp.onImport = ^(NSArray<NSString *> *newPhrases, BOOL replace) {
-        if (replace) [w->_phrases removeAllObjects];
+        KSPhraseEditor *strong = w;
+        if (!strong) return;
+        if (replace) [strong->_phrases removeAllObjects];
         for (NSString *p in newPhrases)
-            if (![w->_phrases containsObject:p]) [w->_phrases addObject:p]; // 去重
-        ksSavePhrases(w->_phrases);
-        [w.tableView reloadData];
+            if (![strong->_phrases containsObject:p]) [strong->_phrases addObject:p]; // 去重
+        ksSavePhrases(strong->_phrases);
+        [strong.tableView reloadData];
     };
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:imp];
     [self presentViewController:nav animated:YES completion:nil];
